@@ -10,6 +10,7 @@ A command-line tool written in Go for displaying the size of files and subdirect
 - ↕️ Support ascending and descending sort order
 - 📁 Directories displayed first
 - 💾 Automatic file size formatting (B, KB, MB, GB, TB)
+- 🌐 HTML output with expandable/collapsible tree structure
 
 ## Installation
 
@@ -38,21 +39,30 @@ go build -o filesize.exe
 
 ### Sort by name (default)
 ```bash
-./filesize.exe . -sort name
+./filesize.exe -sort name .
 ```
 
 ### Sort by size
 ```bash
-./filesize.exe . -sort size
+./filesize.exe -sort size .
 ```
 
 ### Reverse sorting
 ```bash
 # Reverse sort by name
-./filesize.exe . -sort name -reverse
+./filesize.exe -sort name -reverse .
 
 # Reverse sort by size
-./filesize.exe . -sort size -reverse
+./filesize.exe -sort size -reverse .
+```
+
+### HTML Output
+```bash
+# Generate HTML file with interactive tree
+./filesize.exe -html output.html .
+
+# Generate HTML with custom sorting
+./filesize.exe -sort size -html report.html .
 ```
 
 ## Command Line Arguments
@@ -62,6 +72,7 @@ go build -o filesize.exe
   - `name`: Sort by name (default)
   - `size`: Sort by size
 - `-reverse`: Reverse sort order (optional)
+- `-html`: Output to HTML file with interactive tree (optional)
 
 ## Usage Examples
 
@@ -70,17 +81,24 @@ go build -o filesize.exe
 ./filesize.exe
 
 # Show parent directory, sort by size
-./filesize.exe .. -sort size
+./filesize.exe -sort size ..
 
 # Show specified directory, reverse sort by name
-./filesize.exe /home/user/documents -sort name -reverse
+./filesize.exe -sort name -reverse /home/user/documents
 
 # Show current directory, reverse sort by size
-./filesize.exe . -sort size -reverse
+./filesize.exe -sort size -reverse .
+
+# Generate interactive HTML report
+./filesize.exe -html tree-report.html .
+
+# Generate HTML report with size sorting
+./filesize.exe -sort size -html size-report.html /path/to/analyze
 ```
 
-## Output Example
+## Output Examples
 
+### Console Output
 ```
 .
 ├── README.md (2.34 KB)
@@ -92,6 +110,16 @@ go build -o filesize.exe
         ├── screenshot1.png (456 KB)
         └── screenshot2.png (789 KB)
 ```
+
+### HTML Output
+The HTML output generates an interactive web page with:
+- **Expandable/Collapsible folders**: Click on any folder to expand or collapse its contents
+- **Clean, modern interface**: Professional styling with hover effects
+- **Tree structure preservation**: Maintains the same visual hierarchy as console output
+- **File size information**: All sizes are displayed with appropriate units
+- **Responsive design**: Works well on different screen sizes
+
+The HTML file can be opened in any web browser and provides a much more user-friendly way to explore large directory structures.
 
 ## License
 

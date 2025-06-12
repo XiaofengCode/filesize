@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -17,6 +18,16 @@ type FileInfo struct {
 	Children []*FileInfo
 }
 
+// JSONFileInfo represents file info for JSON serialization
+type JSONFileInfo struct {
+	Name      string          `json:"name"`
+	Size      int64           `json:"size"`
+	SizeStr   string          `json:"sizeStr"`
+	IsDir     bool            `json:"isDir"`
+	Path      string          `json:"path"`
+	Children  []*JSONFileInfo `json:"children"`
+}
+
 type SortType int
 
 const (
@@ -26,10 +37,11 @@ const (
 
 func main() {
 	var (
-		sortBy  = flag.String("sort", "name", "Sort method: name (by name) or size (by size)")
-		reverse = flag.Bool("reverse", false, "Reverse sort order")
+		sortBy     = flag.String("sort", "name", "Sort method: name (by name) or size (by size)")
+		reverse    = flag.Bool("reverse", false, "Reverse sort order")
+		htmlOutput = flag.String("html", "", "Output to HTML file (e.g., output.html)")
 	)
-	
+
 	// Custom usage message
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [directory]\n\n", os.Args[0])
@@ -40,18 +52,24 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  %s\t\t\tShow current directory\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s /path/to/dir\t\tShow specified directory\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s . -sort size\t\tSort by size\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s . -sort name -reverse\tReverse sort by name\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -sort size .\t\tSort by size\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -sort name -reverse .\tReverse sort by name\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -html output.html .\tOutput to HTML file\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\nNote: Flags must come before the directory argument\n")
 	}
-	
+
 	flag.Parse()
 
 	// Get target directory
-	var targetDir string
-	if len(flag.Args()) > 0 {
-		targetDir = flag.Args()[0]
-	} else {
-		targetDir = "."
+	targetDir := "."
+	if flag.NArg() > 0 {
+		targetDir = flag.Arg(0)
+	}
+
+	// Check if directory exists
+	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Error: Directory '%s' does not exist\n", targetDir)
+		os.Exit(1)
 	}
 
 	// Parse sort type
@@ -59,118 +77,91 @@ func main() {
 	switch strings.ToLower(*sortBy) {
 	case "size":
 		sortType = SortBySize
-	default:
+	case "name":
 		sortType = SortByName
+	default:
+		fmt.Fprintf(os.Stderr, "Error: Invalid sort method '%s'. Use 'name' or 'size'\n", *sortBy)
+		os.Exit(1)
 	}
 
 	// Build file tree
 	root, err := buildFileTree(targetDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error building file tree: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Sort file tree
+	// Sort the tree
 	sortFileTree(root, sortType, *reverse)
 
-	// Display results
-	fmt.Printf("%s\n", targetDir)
-	if len(root.Children) > 0 {
-		for i, child := range root.Children {
-			isLast := i == len(root.Children)-1
-			var connector string
-			if isLast {
-				connector = "└── "
-			} else {
-				connector = "├── "
-			}
-			sizeStr := formatSize(child.Size)
-			if child.IsDir {
-				fmt.Printf("%s%s/ (%s)\n", connector, child.Name, sizeStr)
-			} else {
-				fmt.Printf("%s%s (%s)\n", connector, child.Name, sizeStr)
-			}
-			
-			// Print child nodes
-			if len(child.Children) > 0 {
-				var newPrefix string
-				if isLast {
-					newPrefix = "    "
-				} else {
-					newPrefix = "│   "
-				}
-				for j, grandChild := range child.Children {
-					isGrandChildLast := j == len(child.Children)-1
-					printFileTree(grandChild, newPrefix, isGrandChildLast)
-				}
-			}
+	// Output
+	if *htmlOutput != "" {
+		err := generateHTML(root, targetDir, *htmlOutput)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating HTML: %v\n", err)
+			os.Exit(1)
 		}
+		fmt.Printf("HTML output saved to: %s\n", *htmlOutput)
+	} else {
+		printFileTree(root, "", true)
 	}
 }
 
-func buildFileTree(dirPath string) (*FileInfo, error) {
-	info, err := os.Stat(dirPath)
+func buildFileTree(rootPath string) (*FileInfo, error) {
+	absPath, err := filepath.Abs(rootPath)
 	if err != nil {
 		return nil, err
 	}
 
 	root := &FileInfo{
-		Name:  filepath.Base(dirPath),
-		Path:  dirPath,
-		IsDir: info.IsDir(),
-		Size:  info.Size(),
+		Name: filepath.Base(absPath),
+		Path: absPath,
 	}
 
-	if !info.IsDir() {
-		return root, nil
-	}
-
-	entries, err := os.ReadDir(dirPath)
+	err = buildFileTreeRecursive(root)
 	if err != nil {
-		return root, err
+		return nil, err
 	}
 
-	for _, entry := range entries {
-		childPath := filepath.Join(dirPath, entry.Name())
-		childInfo, err := entry.Info()
-		if err != nil {
-			continue // Skip inaccessible files
-		}
-
-		child := &FileInfo{
-			Name:  entry.Name(),
-			Path:  childPath,
-			IsDir: entry.IsDir(),
-			Size:  childInfo.Size(),
-		}
-
-		if entry.IsDir() {
-			// Recursively process subdirectories
-			subTree, err := buildFileTree(childPath)
-			if err == nil {
-				child.Children = subTree.Children
-				child.Size = calculateDirSize(child)
-			}
-		}
-
-		root.Children = append(root.Children, child)
-	}
-
-	// Calculate total directory size
-	root.Size = calculateDirSize(root)
 	return root, nil
 }
 
-func calculateDirSize(dir *FileInfo) int64 {
-	if !dir.IsDir {
-		return dir.Size
+func buildFileTreeRecursive(node *FileInfo) error {
+	info, err := os.Stat(node.Path)
+	if err != nil {
+		return err
 	}
 
-	var totalSize int64
-	for _, child := range dir.Children {
-		totalSize += child.Size
+	node.IsDir = info.IsDir()
+
+	if node.IsDir {
+		entries, err := os.ReadDir(node.Path)
+		if err != nil {
+			return err
+		}
+
+		var totalSize int64
+		for _, entry := range entries {
+			childPath := filepath.Join(node.Path, entry.Name())
+			child := &FileInfo{
+				Name: entry.Name(),
+				Path: childPath,
+			}
+
+			err := buildFileTreeRecursive(child)
+			if err != nil {
+				continue // Skip files we can't read
+			}
+
+			node.Children = append(node.Children, child)
+			totalSize += child.Size
+		}
+		node.Size = totalSize
+	} else {
+		node.Size = info.Size()
 	}
-	return totalSize
+
+	return nil
 }
 
 func sortFileTree(root *FileInfo, sortType SortType, reverse bool) {
@@ -188,17 +179,17 @@ func sortFileTree(root *FileInfo, sortType SortType, reverse bool) {
 	// Sort current level
 	sort.Slice(root.Children, func(i, j int) bool {
 		a, b := root.Children[i], root.Children[j]
-		
-		// Directories first
-		if a.IsDir != b.IsDir {
-			return a.IsDir
-		}
 
 		var result bool
 		switch sortType {
 		case SortBySize:
+			// For size sorting, don't prioritize folders
 			result = a.Size > b.Size // Size descending
 		default: // SortByName
+			// For name sorting, folders first
+			if a.IsDir != b.IsDir {
+				return a.IsDir
+			}
 			result = strings.ToLower(a.Name) < strings.ToLower(b.Name) // Name ascending
 		}
 
@@ -235,7 +226,11 @@ func printFileTree(node *FileInfo, prefix string, isLast bool) {
 	if len(node.Children) > 0 {
 		var newPrefix string
 		if prefix == "" {
-			newPrefix = ""
+			if isLast {
+				newPrefix = "    "
+			} else {
+				newPrefix = "│   "
+			}
 		} else if isLast {
 			newPrefix = prefix + "    "
 		} else {
@@ -270,4 +265,309 @@ func formatSize(size int64) string {
 	default:
 		return fmt.Sprintf("%d B", size)
 	}
+}
+
+// convertToJSON converts FileInfo to JSONFileInfo
+func convertToJSON(node *FileInfo) *JSONFileInfo {
+	if node == nil {
+		return nil
+	}
+
+	jsonNode := &JSONFileInfo{
+		Name:    node.Name,
+		Size:    node.Size,
+		SizeStr: formatSize(node.Size),
+		IsDir:   node.IsDir,
+		Path:    node.Path,
+	}
+
+	// Convert children
+	if len(node.Children) > 0 {
+		jsonNode.Children = make([]*JSONFileInfo, len(node.Children))
+		for i, child := range node.Children {
+			jsonNode.Children[i] = convertToJSON(child)
+		}
+	}
+
+	return jsonNode
+}
+
+func generateHTML(root *FileInfo, targetDir, outputFile string) error {
+	file, err := os.Create(outputFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Convert to JSON
+	jsonData := convertToJSON(root)
+	jsonBytes, err := json.MarshalIndent(jsonData, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// Write complete HTML with embedded JSON
+	fmt.Fprintf(file, `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Size Tree - %s</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .tree {
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        .tree-item {
+            margin: 2px 0;
+            cursor: pointer;
+            user-select: none;
+            padding: 2px 0;
+        }
+        .tree-item:hover {
+            background-color: #f0f0f0;
+        }
+        .folder {
+            color: #0066cc;
+            font-weight: bold;
+        }
+        .file {
+            color: #333;
+        }
+        .size {
+            color: #666;
+            font-weight: normal;
+        }
+        .toggle {
+            display: inline-block;
+            width: 16px;
+            text-align: center;
+            margin-right: 4px;
+            cursor: pointer;
+        }
+        .children {
+            margin-left: 20px;
+        }
+        .hidden {
+            display: none;
+        }
+        .connector {
+            color: #999;
+        }
+        .controls {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #e9ecef;
+        }
+        .control-group {
+            display: inline-block;
+            margin-right: 20px;
+        }
+        .control-group label {
+            font-weight: bold;
+            margin-right: 8px;
+            color: #495057;
+        }
+        .control-group select, .control-group button {
+            padding: 5px 10px;
+            border: 1px solid #ced4da;
+            border-radius: 3px;
+            background-color: white;
+            font-family: inherit;
+        }
+        .control-group button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .control-group button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>File Size Tree: %s</h1>
+        <div class="controls">
+            <div class="control-group">
+                <label for="sortBy">Sort by:</label>
+                <select id="sortBy">
+                    <option value="name">Name</option>
+                    <option value="size">Size</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="sortOrder">Order:</label>
+                <select id="sortOrder">
+                    <option value="asc">Ascending</option>
+                    <option value="desc">Descending</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <button onclick="applySorting()">Apply Sort</button>
+                <button onclick="expandAll()">Expand All</button>
+                <button onclick="collapseAll()">Collapse All</button>
+            </div>
+        </div>
+        <div class="tree" id="fileTree">
+        </div>
+    </div>
+    <script>
+        // Embedded JSON data
+        const treeData = %s;
+        
+        function renderTree(data, container, prefix = '', isLast = true) {
+            if (!data) return;
+            
+            const item = document.createElement('div');
+            item.className = 'tree-item ' + (data.isDir ? 'folder' : 'file');
+            
+            let connector = '';
+            if (prefix) {
+                connector = isLast ? '└── ' : '├── ';
+            }
+            
+            let content = '';
+            if (data.isDir && data.children && data.children.length > 0) {
+                content = '<span class="connector">' + prefix + connector + '</span><span class="toggle">▼</span>' + data.name + '/ <span class="size">(' + data.sizeStr + ')</span>';
+                item.onclick = function() { toggleFolder(this); };
+            } else if (data.isDir) {
+                content = '<span class="connector">' + prefix + connector + '</span>' + data.name + '/ <span class="size">(' + data.sizeStr + ')</span>';
+            } else {
+                content = '<span class="connector">' + prefix + connector + '</span>' + data.name + ' <span class="size">(' + data.sizeStr + ')</span>';
+            }
+            
+            item.innerHTML = content;
+            item.dataset.name = data.name;
+            item.dataset.size = data.size;
+            item.dataset.sizeStr = data.sizeStr;
+            item.dataset.isDir = data.isDir;
+            
+            container.appendChild(item);
+            
+            if (data.children && data.children.length > 0) {
+                const childrenContainer = document.createElement('div');
+                childrenContainer.className = 'children';
+                
+                const newPrefix = prefix + (isLast ? '    ' : '│   ');
+                for (let i = 0; i < data.children.length; i++) {
+                    const isChildLast = i === data.children.length - 1;
+                    renderTree(data.children[i], childrenContainer, newPrefix, isChildLast);
+                }
+                
+                container.appendChild(childrenContainer);
+            }
+        }
+        
+        function toggleFolder(element) {
+            const children = element.nextElementSibling;
+            const toggle = element.querySelector('.toggle');
+            
+            if (children && children.classList.contains('children')) {
+                if (children.classList.contains('hidden')) {
+                    children.classList.remove('hidden');
+                    toggle.textContent = '▼';
+                } else {
+                    children.classList.add('hidden');
+                    toggle.textContent = '▶';
+                }
+            }
+        }
+        
+        function sortTreeData(data, sortBy, ascending) {
+            if (!data || !data.children) return data;
+            
+            // Create a deep copy
+            const sortedData = JSON.parse(JSON.stringify(data));
+            
+            function sortRecursive(node) {
+                if (!node.children) return;
+                
+                // Sort children recursively first
+                node.children.forEach(sortRecursive);
+                
+                // Sort current level
+                node.children.sort((a, b) => {
+                    let result;
+                    if (sortBy === 'size') {
+                        result = b.size - a.size; // Default descending for size
+                    } else {
+                        // For name sorting, folders first
+                        if (a.isDir !== b.isDir) {
+                            return a.isDir ? -1 : 1;
+                        }
+                        result = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+                    }
+                    
+                    return ascending ? result : -result;
+                });
+            }
+            
+            sortRecursive(sortedData);
+            return sortedData;
+        }
+        
+        function applySorting() {
+            const sortBy = document.getElementById('sortBy').value;
+            const sortOrder = document.getElementById('sortOrder').value;
+            const ascending = sortOrder === 'asc';
+            
+            const sortedData = sortTreeData(treeData, sortBy, ascending);
+            
+            const container = document.getElementById('fileTree');
+            container.innerHTML = '';
+            
+            if (sortedData.children) {
+                sortedData.children.forEach((child, index) => {
+                    const isLast = index === sortedData.children.length - 1;
+                    renderTree(child, container, '', isLast);
+                });
+            }
+        }
+        
+        function expandAll() {
+            const hiddenElements = document.querySelectorAll('.children.hidden');
+            hiddenElements.forEach(element => {
+                element.classList.remove('hidden');
+                const toggle = element.previousElementSibling.querySelector('.toggle');
+                if (toggle) toggle.textContent = '▼';
+            });
+        }
+        
+        function collapseAll() {
+            const childrenElements = document.querySelectorAll('.children');
+            childrenElements.forEach(element => {
+                element.classList.add('hidden');
+                const toggle = element.previousElementSibling.querySelector('.toggle');
+                if (toggle) toggle.textContent = '▶';
+            });
+        }
+        
+        // Initial render
+        document.addEventListener('DOMContentLoaded', function() {
+            applySorting();
+        });
+    </script>
+</body>
+</html>`, targetDir, targetDir, string(jsonBytes))
+
+	return nil
 }
